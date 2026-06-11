@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from data import ID_COLUMNS
+from features_advanced import make_scientific_corrosion_features
 
 
 ROLLING_WINDOWS = [3, 6, 12, 24]
@@ -555,7 +556,7 @@ def make_platinum_advanced_features(environment, groups, bronze_features, silver
 
 
 def build_history_feature_table(environment):
-    """Pipeline complète Bronze → Silver → Gold → Platinum"""
+    """Pipeline complète Bronze → Silver → Gold → Platinum → Scientific"""
     environment = add_dates(environment)
     groups = environment.groupby("aircraft_id", sort=False)
     history_count = groups.cumcount() + 1
@@ -579,6 +580,9 @@ def build_history_feature_table(environment):
     # PLATINUM: Features avancées de science de la corrosion
     platinum_features = make_platinum_advanced_features(environment, groups, bronze_features, silver_features, gold_features)
     
+    # SCIENTIFIC: Features basées sur le rapport de recherche (60+ nouvelles features)
+    scientific_features = make_scientific_corrosion_features(environment)
+    
     # Features classiques sélectives (colonnes clés uniquement)
     key_columns = [
         "metar_relative_humidity",
@@ -592,6 +596,7 @@ def build_history_feature_table(environment):
         silver_features,
         gold_features,
         platinum_features,
+        scientific_features,
         pd.DataFrame({"history_count": history_count}, index=environment.index),
         make_calendar_features(environment),
     ]
