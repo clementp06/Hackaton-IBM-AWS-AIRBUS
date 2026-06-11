@@ -74,12 +74,13 @@ def print_cv_report(cv_results):
             f"AUC={row.auc:.4f}, "
             f"AP={row.average_precision:.4f}, "
             f"logloss={row.log_loss:.4f}, "
+            f"MSE={row.mse:.6f}, "
             f"best_iter={row.best_iteration}, "
             f"valid_aircraft={row.valid_aircraft}"
         )
 
     print("\nCV mean/std:")
-    print(cv_results[["auc", "average_precision", "log_loss"]].agg(["mean", "std"]))
+    print(cv_results[["auc", "average_precision", "log_loss", "mse"]].agg(["mean", "std"]))
 
 
 def save_outputs(model, feature_importance, paths):
@@ -132,7 +133,7 @@ def main():
     print_cv_report(cv_results)
 
     print("\nValidation holdout 20% avions")
-    model, holdout_metrics = train_holdout_model(
+    model, train_metrics, valid_metrics = train_holdout_model(
         X,
         y,
         train_idx,
@@ -140,11 +141,19 @@ def main():
         model_config,
     )
     print(
-        f"Holdout: "
-        f"AUC={holdout_metrics['auc']:.4f}, "
-        f"AP={holdout_metrics['average_precision']:.4f}, "
-        f"logloss={holdout_metrics['log_loss']:.4f}, "
-        f"best_iter={holdout_metrics['best_iteration']}"
+        f"\nTrain Set: "
+        f"AUC={train_metrics['auc']:.4f}, "
+        f"AP={train_metrics['average_precision']:.4f}, "
+        f"logloss={train_metrics['log_loss']:.4f}, "
+        f"MSE={train_metrics['mse']:.6f}"
+    )
+    print(
+        f"Validation Set: "
+        f"AUC={valid_metrics['auc']:.4f}, "
+        f"AP={valid_metrics['average_precision']:.4f}, "
+        f"logloss={valid_metrics['log_loss']:.4f}, "
+        f"MSE={valid_metrics['mse']:.6f}, "
+        f"best_iter={valid_metrics['best_iteration']}"
     )
     print(
         f"Avions train={groups.iloc[train_idx].nunique()}, "

@@ -17,16 +17,19 @@ class PathConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    n_estimators: int = 800
-    learning_rate: float = 0.03
+    n_estimators: int = 1200
+    learning_rate: float = 0.015
     num_leaves: int = 31
-    min_child_samples: int = 40
-    subsample: float = 0.85
-    colsample_bytree: float = 0.85
-    reg_alpha: float = 0.05
-    reg_lambda: float = 0.2
-    early_stopping_rounds: int = 60
+    min_child_samples: int = 60
+    subsample: float = 0.75
+    colsample_bytree: float = 0.75
+    reg_alpha: float = 0.2
+    reg_lambda: float = 0.8
+    early_stopping_rounds: int = 100
     seed: int = 42
+    max_depth: int = 7
+    min_split_gain: float = 0.02
+    min_child_weight: float = 0.001
 
 
 @dataclass(frozen=True)
