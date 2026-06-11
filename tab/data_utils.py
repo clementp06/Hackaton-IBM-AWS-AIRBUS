@@ -58,13 +58,19 @@ def load_corrosion_data(path: Path = CORR_TRAIN_PATH) -> pd.DataFrame:
     return df
 
 
-def load_environment_data(path: Path = ENV_TRAIN_PATH) -> pd.DataFrame:
+def load_environment_data(path: Path = ENV_TRAIN_PATH, test: bool = False) -> pd.DataFrame:
     """
     Load environmental data with timezone-naive timestamps.
+    
+    Args:
+        path: Path to environment data file (default: training data)
+        test: If True, load test data instead (default: False)
     
     Returns:
         DataFrame with environmental features per aircraft per month
     """
+    if test:
+        path = ENV_TEST_PATH
     df = pd.read_csv(path)
     df["month_start_date"] = pd.to_datetime(df["month_start_date"], utc=True).dt.tz_convert(None)
     return df
@@ -86,8 +92,29 @@ def aggregate_environmental_features(
     Returns:
         DataFrame with aircraft_id and aggregated features
     """
+    # Calculate corrosion exposure indices
+    env_df = env_df.copy()
+    
+    # Alternative corrosion index using available data
+    # Combines corrosive gases (SO2, NO2) with humidity and exposure time
+    env_df["corrosion_exposure_index"] = (
+        (env_df["sulphur_dioxide_mass_mixing_ratio"] + 
+         env_df["nitrogen_dioxide_mass_mixing_ratio"]) * 
+        env_df["metar_relative_humidity"] * 
+        env_df["total_parking_minutes"] / 1000
+    )
+    
+    # Moisture exposure index (humidity × parking time)
+    env_df["moisture_exposure_index"] = (
+        env_df["metar_relative_humidity"] * 
+        env_df["total_parking_minutes"] / 100
+    )
+    
+    # Add new indices to features list
+    features_with_indices = list(features) + ["corrosion_exposure_index", "moisture_exposure_index"]
+    
     # Filter to available features
-    available_features = [f for f in features if f in env_df.columns]
+    available_features = [f for f in features_with_indices if f in env_df.columns]
     
     if not available_features:
         raise ValueError(f"None of the requested features found in environment data")

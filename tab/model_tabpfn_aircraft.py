@@ -74,9 +74,14 @@ def train_calibrated_tabpfn_model(
     if check_tabpfn_available():
         try:
             from tabpfn import TabPFNClassifier
+            import torch
+            
+            # Use MPS (Metal Performance Shaders) on MacBook if available
+            device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+            print(f"    Using device: {device}")
             
             # Base TabPFN model
-            base_model = TabPFNClassifier(device='cpu', N_ensemble_configurations=32)
+            base_model = TabPFNClassifier(device=device)
             
             # Calibrate using cross-validation
             # This is crucial for Brier score optimization
