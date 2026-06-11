@@ -1,0 +1,255 @@
+### Cell 1: Upload Test Data
+
+# Upload environment_test.csv
+print("Upload environment_test.csv:")
+uploaded = files.upload()
+
+print("\n✓ Test file uploaded successfully")
+
+---
+
+### Cell 2: Load and Prepare Test Data
+
+# Load test environment data
+print("Loading test environment data...")
+env_test_df = pd.read_csv('environment_test.csv')
+env_test_df['month_start_date'] = pd.to_datetime(env_test_df['month_start_date'])
+
+print(f"Test environment data: {env_test_df.shape}")
+print(f"Test aircraft: {env_test_df['aircraft_id'].nunique()}")
+print(f"Total rows (predictions to generate): {len(env_test_df)}")
+
+env_test_df.head()
+
+---
+
+### Cell 3: Calculate Test Corrosion Indices
+
+# Calculate corrosion exposure indices for test data
+print("Calculating corrosion exposure indices for test data...")
+
+# Corrosion exposure index
+env_test_df['corrosion_exposure_index'] = (
+    (env_test_df['sulphur_dioxide_mass_mixing_ratio'] + 
+     env_test_df['nitrogen_dioxide_mass_mixing_ratio']) * 
+    env_test_df['metar_relative_humidity'] * 
+    env_test_df['total_parking_minutes'] / 1000
+)
+
+# Moisture exposure index
+env_test_df['moisture_exposure_index'] = (
+    env_test_df['metar_relative_humidity'] * 
+    env_test_df['total_parking_minutes'] / 100
+)
+
+print("✓ Indices calculated")
+
+---
+
+### Cell 4: Aggregate Test Features Per Aircraft-Month
+
+# Aggregate test features per aircraft per month
+print("Aggregating test features per aircraft-month...")
+
+# Define the same features used in training
+env_features = [
+    'metar_relative_humidity',
+    'metar_temperature_c',
+    'metar_dew_point_c',
+    'metar_wind_speed_kn',
+    'sea_salt_aerosol_05_5_mixing_ratio',
+    'sea_salt_aerosol_5_20_mixing_ratio',
+    'ozone_mass_mixing_ratio',
+    'sulphur_dioxide_mass_mixing_ratio',
+    'nitrogen_dioxide_mass_mixing_ratio',
+    'corrosion_exposure_index',
+    'moisture_exposure_index'
+]
+
+# For each aircraft-month, compute mean of available features
+test_agg = env_test_df.groupby(['aircraft_id', 'month_start_date'])[env_features].mean().reset_index()
+test_agg = test_agg.fillna(0)
+
+print(f"Aggregated test features: {test_agg.shape}")
+print(f"Total predictions to generate: {len(test_agg)}")
+
+test_agg.head()
+
+---
+
+### Cell 5: Calculate Reference Month for Test Data
+
+# Calculate months since first observation for each aircraft
+print("Calculating reference months...")
+
+first_obs = env_test_df.groupby('aircraft_id')['month_start_date'].min().reset_index()
+first_obs.columns = ['aircraft_id', 'first_observation_date']
+
+test_agg = test_agg.merge(first_obs, on='aircraft_id', how='left')
+
+# Calculate reference_month (months since first observation)
+test_agg['reference_month'] = (
+    (test_agg['month_start_date'].dt.year - test_agg['first_observation_date'].dt.year) * 12
+    + (test_agg['month_start_date'].dt.month - test_agg['first_observation_date'].dt.month)
+)
+
+# Create id column in format: aircraft_id_YYYY-MM
+test_agg['id'] = (
+    test_agg['aircraft_id'] + '_' + 
+    test_agg['month_start_date'].dt.strftime('%Y-%m')
+)
+
+print(f"✓ Reference months calculated")
+print(f"Reference month range: {test_agg['reference_month'].min():.0f} to {test_agg['reference_month'].max():.0f}")
+
+test_agg.head()
+
+---
+
+### Cell 6: Train Final Model on All Training Data
+
+# Train final model on all training data
+print("Training final model on all training data...")
+
+scaler_final = RobustScaler()
+X_train_final = scaler_final.fit_transform(X)
+
+if use_tabpfn:
+    base_model_final = TabPFNClassifier(device='cpu')
+else:
+    base_model_final = GradientBoostingClassifier(
+        random_state=42,
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05
+    )
+
+model_final = CalibratedClassifierCV(base_model_final, method='isotonic', cv=3)
+model_final.fit(X_train_final, y)
+
+print("✓ Final model trained")
+
+---
+
+### Cell 7: Prepare Test Features for ALL Rows
+
+# Prepare test features for ALL predictions
+print("Preparing test features for all rows...")
+
+# Build feature matrix matching training structure
+X_test_values = []
+
+# reference_month
+X_test_values.append(test_agg['reference_month'].values)
+
+# Environmental features - match training feature order
+for feat in feature_cols[1:]:  # Skip reference_month
+    # Extract base feature name (remove __mean or __std suffix)
+    base_feat = feat.replace('__mean', '').replace('__std', '')
+    
+    if base_feat in test_agg.columns:
+        X_test_values.append(test_agg[base_feat].values)
+    else:
+        print(f"  WARNING: Missing feature {feat}, using zeros")
+        X_test_values.append(np.zeros(len(test_agg)))
+
+X_test = np.column_stack(X_test_values)
+
+# Handle any NaN values
+X_test = np.nan_to_num(X_test, nan=0.0)
+
+print(f"Test samples prepared: {len(X_test)}")
+print(f"Feature shape: {X_test.shape}")
+
+---
+
+### Cell 8: Make Predictions for ALL Rows
+
+# Scale test features
+X_test_scaled = scaler_final.transform(X_test)
+
+# Predict probabilities for ALL rows
+print("Making predictions for all rows...")
+y_pred_proba = model_final.predict_proba(X_test_scaled)[:, 1]
+
+# Clip to valid range
+y_pred_proba = np.clip(y_pred_proba, 1e-6, 1 - 1e-6)
+
+# Create submission dataframe
+submission_df = pd.DataFrame({
+    'id': test_agg['id'],
+    'corrosion_risk': y_pred_proba
+})
+
+print(f"\n✓ Predictions complete!")
+print(f"Total predictions: {len(submission_df)}")
+print(f"Unique aircraft: {test_agg['aircraft_id'].nunique()}")
+print(f"\nPrediction statistics:")
+print(f"  Min:  {y_pred_proba.min():.4f}")
+print(f"  Max:  {y_pred_proba.max():.4f}")
+print(f"  Mean: {y_pred_proba.mean():.4f}")
+print(f"  Median: {np.median(y_pred_proba):.4f}")
+print(f"  Std:  {y_pred_proba.std():.4f}")
+
+submission_df.head(10)
+
+---
+
+### Cell 9: Visualize Predictions
+
+# Visualize prediction distribution
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Histogram
+axes[0].hist(y_pred_proba, bins=50, alpha=0.7, edgecolor='black', color='steelblue')
+axes[0].set_title('Distribution of Predicted Corrosion Risk', fontsize=12, fontweight='bold')
+axes[0].set_xlabel('Predicted Probability')
+axes[0].set_ylabel('Frequency')
+axes[0].axvline(y_pred_proba.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {y_pred_proba.mean():.3f}')
+axes[0].legend()
+
+# Cumulative distribution
+sorted_probs = np.sort(y_pred_proba)
+cumulative = np.arange(1, len(sorted_probs) + 1) / len(sorted_probs)
+axes[1].plot(sorted_probs, cumulative, linewidth=2, color='darkorange')
+axes[1].set_title('Cumulative Distribution of Predictions', fontsize=12, fontweight='bold')
+axes[1].set_xlabel('Predicted Probability')
+axes[1].set_ylabel('Cumulative Proportion')
+axes[1].grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+---
+
+### Cell 10: Download Submission File
+
+# Save submission file
+submission_df.to_csv('submission.csv', index=False)
+
+print("✓ Submission file saved as 'submission.csv'")
+print(f"\nSubmission format:")
+print(submission_df.head())
+print(f"\nLast predictions:")
+print(submission_df.tail())
+
+# Download file (for Colab)
+files.download('submission.csv')
+
+---
+
+### Cell 11: Summary
+
+print("="*60)
+print("INFERENCE COMPLETE")
+print("="*60)
+print(f"\n✓ Total predictions generated: {len(submission_df)}")
+print(f"✓ Unique aircraft: {test_agg['aircraft_id'].nunique()}")
+print(f"✓ Model: {'TabPFN' if use_tabpfn else 'GradientBoosting'} with isotonic calibration")
+print(f"\n✓ Submission file: submission.csv")
+print(f"  - Format: id (aircraft_id_YYYY-MM), corrosion_risk")
+print(f"  - Rows: {len(submission_df)}")
+print(f"\n✓ Prediction range: [{y_pred_proba.min():.4f}, {y_pred_proba.max():.4f}]")
+print(f"✓ Mean prediction: {y_pred_proba.mean():.4f}")
+print(f"✓ Median prediction: {np.median(y_pred_proba):.4f}")
+print("="*60)
