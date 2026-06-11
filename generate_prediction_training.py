@@ -1,7 +1,5 @@
 import argparse
 import csv
-import json
-import random
 from datetime import date
 from pathlib import Path
 
@@ -9,109 +7,58 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
 DEFAULT_CORROSIONS_PATH = DATA_DIR / "corrosions_training.csv"
-DEFAULT_DISTRIBUTION_PATH = DATA_DIR / "best_age_distribution.json"
+DEFAULT_ENVIRONMENT_PATH = DATA_DIR / "environment_training.csv"
 DEFAULT_OUTPUT_PATH = DATA_DIR / "prediction_training.csv"
-DEFAULT_MIN_PREDICTIONS = 1
-DEFAULT_MAX_PREDICTIONS = 8
 
 
-def add_months(start_date, months):
-    total_months = start_date.year * 12 + start_date.month - 1 + months
-    year = total_months // 12
-    month = total_months % 12 + 1
-    return date(year, month, 1)
-
-
-def parse_observation_date(value):
+def parse_date(value):
     year, month, day = value.split("-")
     return date(int(year), int(month), int(day))
 
 
-def load_empirical_distribution(distribution_path):
-    with distribution_path.open(encoding="utf-8") as file:
-        report = json.load(file)
-
-    best_distribution = report["best_distribution"]
-    if best_distribution["name"] != "empirical_discrete":
-        raise ValueError(
-            "La meilleure loi du JSON n'est pas empirical_discrete. "
-            "Relance test_distributions.py ou adapte ce generateur."
-        )
-
-    params = best_distribution["params"]
-    values = [int(round(value)) for value in params["values"]]
-
-    if "probabilities" in params:
-        weights = [float(probability) for probability in params["probabilities"]]
-    else:
-        weights = [int(count) for count in params["counts"]]
-
-    return values, weights
+def parse_year_month(value):
+    year, month = value.split("-")
+    return date(int(year), int(month), 1)
 
 
-def weighted_sample_without_replacement(rng, values, weights, k):
-    available_values = list(values)
-    available_weights = list(weights)
-    sampled_values = []
-
-    if k > len(available_values):
-        raise ValueError(
-            f"Impossible de tirer {k} dates differentes avec seulement "
-            f"{len(available_values)} ages possibles."
-        )
-
-    for _ in range(k):
-        selected_value = rng.choices(available_values, weights=available_weights, k=1)[0]
-        selected_index = available_values.index(selected_value)
-        sampled_values.append(selected_value)
-        del available_values[selected_index]
-        del available_weights[selected_index]
-
-    return sampled_values
-
-
-def build_prediction_training(
-    corrosions_path,
-    distribution_path,
-    seed,
-    min_predictions,
-    max_predictions,
-):
-    rng = random.Random(seed)
-    age_values, age_weights = load_empirical_distribution(distribution_path)
-    rows = []
+def read_corrosion_dates(corrosions_path):
+    corrosion_dates = {}
 
     with corrosions_path.open(newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
-        for corrosion_row in reader:
-            aircraft_id = corrosion_row["aircraft_id"]
-            delivery_date = date(
-                int(corrosion_row["aircraft_delivery_year"]),
-                int(corrosion_row["aircraft_delivery_month"]),
-                1,
+        for row in reader:
+            corrosion_dates[row["aircraft_id"]] = parse_date(row["observation_date"])
+
+    return corrosion_dates
+
+
+def build_prediction_training(corrosions_path, environment_path):
+    corrosion_dates = read_corrosion_dates(corrosions_path)
+    rows = []
+    missing_aircraft_ids = set()
+
+    with environment_path.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for environment_row in reader:
+            aircraft_id = environment_row["aircraft_id"]
+            corrosion_date = corrosion_dates.get(aircraft_id)
+
+            if corrosion_date is None:
+                missing_aircraft_ids.add(aircraft_id)
+                continue
+
+            prediction_year_month = environment_row["year_month"]
+            prediction_date = parse_year_month(prediction_year_month)
+            corrosion_risk = 0 if corrosion_date > prediction_date else 1
+
+            rows.append(
+                {
+                    "id": f"{aircraft_id}_{prediction_year_month}",
+                    "corrosion_risk": corrosion_risk,
+                }
             )
-            observation_date = parse_observation_date(corrosion_row["observation_date"])
 
-            prediction_count = rng.randint(min_predictions, max_predictions)
-            sampled_ages = weighted_sample_without_replacement(
-                rng,
-                age_values,
-                age_weights,
-                prediction_count,
-            )
-
-            for age_months in sampled_ages:
-                prediction_date = add_months(delivery_date, age_months)
-                corrosion_risk = 0 if observation_date > prediction_date else 1
-
-                rows.append(
-                    {
-                        "id": f"{aircraft_id}_{prediction_date:%Y-%m}",
-                        "corrosion_risk": corrosion_risk,
-                    }
-                )
-
-    return rows
+    return rows, missing_aircraft_ids
 
 
 def write_prediction_training(rows, output_path):
@@ -121,7 +68,7 @@ def write_prediction_training(rows, output_path):
         writer.writerows(rows)
 
 
-def print_summary(rows, output_path):
+def print_summary(rows, missing_aircraft_ids, output_path):
     positives = sum(row["corrosion_risk"] for row in rows)
     negatives = len(rows) - positives
 
@@ -129,37 +76,31 @@ def print_summary(rows, output_path):
     print(f"Lignes : {len(rows)}")
     print(f"corrosion_risk=0 : {negatives}")
     print(f"corrosion_risk=1 : {positives}")
+    print(f"Avions environnement absents de corrosions_training : {len(missing_aircraft_ids)}")
+
+    if missing_aircraft_ids:
+        preview = ", ".join(sorted(missing_aircraft_ids)[:10])
+        print(f"Apercu des avions absents : {preview}")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Cree prediction_training.csv a partir de corrosions_training.csv "
-            "en tirant des dates selon la loi empirique des dates de prediction."
+            "Cree prediction_training.csv avec une ligne par occurrence de "
+            "aircraft_id/year_month dans environment_training.csv."
         )
     )
     parser.add_argument("--corrosions", type=Path, default=DEFAULT_CORROSIONS_PATH)
-    parser.add_argument("--distribution", type=Path, default=DEFAULT_DISTRIBUTION_PATH)
+    parser.add_argument("--environment", type=Path, default=DEFAULT_ENVIRONMENT_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--min-predictions", type=int, default=DEFAULT_MIN_PREDICTIONS)
-    parser.add_argument("--max-predictions", type=int, default=DEFAULT_MAX_PREDICTIONS)
     args = parser.parse_args()
 
-    if args.min_predictions < 1:
-        raise ValueError("--min-predictions doit etre superieur ou egal a 1.")
-    if args.max_predictions < args.min_predictions:
-        raise ValueError("--max-predictions doit etre >= --min-predictions.")
-
-    rows = build_prediction_training(
+    rows, missing_aircraft_ids = build_prediction_training(
         args.corrosions,
-        args.distribution,
-        args.seed,
-        args.min_predictions,
-        args.max_predictions,
+        args.environment,
     )
     write_prediction_training(rows, args.output)
-    print_summary(rows, args.output)
+    print_summary(rows, missing_aircraft_ids, args.output)
 
 
 if __name__ == "__main__":
